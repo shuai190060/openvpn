@@ -1,0 +1,144 @@
+
+
+# - name: test the private instance
+#   hosts: private
+#   become: true
+
+#   tasks:
+#   - name: curl google.com
+#     uri: 
+#       url: https://www.google.com
+#     register: result 
+#   - name: print result 
+#     debug:
+#       var: result 
+
+
+
+
+- name: configure the vpn host
+  hosts: bastion_host
+  become: true
+# install package
+  tasks:
+  - name: update apt
+    apt:
+      update_cache: yes
+    run_once: true
+  - name: install openvpn and easyrsa
+    apt:
+      name:
+      - openvpn
+      - easy-rsa
+      state: present
+# create ca folder template
+  - name: check if pki folder exist or not
+    stat: 
+      path: /etc/openvpn/easyrsa/pki
+    register: pki
+  - name: make-cadir
+    command: make-cadir /etc/openvpn/easyrsa
+    run_once: true
+    ignore_errors: true
+    when: pki.stat.exists == false 
+# init pki
+  - name: check if openssl-easyrsa.cnf exist or not
+    stat: 
+      path: /etc/openvpn/easyrsa/openssl-easyrsa.cnf
+    register: openssl_easyrsa_exist
+  - name: easy-rsa init 
+    command: ./easyrsa init-pki
+    args:
+      chdir: /etc/openvpn/easyrsa
+    when: openssl_easyrsa_exist.stat.exists == false 
+    run_once: true
+# create ca.cert and ca.key
+  - name: check if ca.key exist or not
+    stat: 
+      path: /etc/openvpn/easyrsa/pki/private/ca.key
+    register: ca_key_exist
+  - name: create ca crt and key
+    expect:
+      command: ./easyrsa build-ca nopass
+      responses:
+        "Common Name \\(eg: your user, host, or server name\\) \\[Easy-RSA CA\\]:": "server\n"
+    args:
+      chdir: /etc/openvpn/easyrsa
+    when: ca_key_exist.stat.exists == false
+    run_once: true
+  # create dh.key
+  - name: check if dh.pem exist or not
+    stat: 
+      path: /etc/openvpn/easyrsa/pki/dh.pem
+    register: dh_key_exist
+  - name: generate dh key 
+    command:  ./easyrsa gen-dh
+    args:
+      chdir: /etc/openvpn/easyrsa
+      creates: /etc/openvpn/easyrsa/pki/dh.pem
+    when: dh_key_exist.stat.exists == false
+    run_once: true
+  # create server.key and request
+  - name: check if server.key exist or not
+    stat: 
+      path: /etc/openvpn/easyrsa/pki/private/server.key
+    register: server_key_exist
+  - name: generate the server key and request
+    shell: echo -e "server" | ./easyrsa --req-cn=server gen-req server nopass
+    args:
+      chdir: /etc/openvpn/easyrsa
+      creates:
+      - /etc/openvpn/easyrsa/pki/private/server.key
+      - /etc/openvpn/easyrsa/pki/reqs/server.req
+    when: server_key_exist.stat.exists == false
+    run_once: true
+  # sign the server.crt
+  - name: check if server.key exist or not
+    stat: 
+      path: /etc/openvpn/easyrsa/pki/issued/server.crt
+    register: server_crt_exist
+  - name: sign the server certificate 
+    shell: echo  "yes" | ./easyrsa sign-req server server
+    args:
+      chdir: /etc/openvpn/easyrsa
+      creates: /etc/openvpn/easyrsa/pki/issued/server.crt
+    when: server_crt_exist.stat.exists == false
+    run_once: true
+  # create client.key and request
+  - name: check if client.key exist or not
+    stat: 
+      path: /etc/openvpn/easyrsa/pki/private/client.key
+    register: client_key_exist
+  - name: create the client key
+    shell: echo  "client" | ./easyrsa --req-cn=client gen-req client nopass
+    args:
+      chdir: /etc/openvpn/easyrsa
+      creates: 
+      - /etc/openvpn/easyrsa/pki/private/client.key
+      - /etc/openvpn/easyrsa/pki/reqs/client.req
+    when: client_key_exist.stat.exists == false
+    run_once: true
+  # sign the client.crt
+  - name: check if client.crt exist or not
+    stat: 
+      path: /etc/openvpn/easyrsa/pki/issued/client.crt
+    register: client_crt_exist
+  - name: sign the client certificate 
+    shell: echo "yes" | ./easyrsa sign-req client client
+    args:
+      chdir: /etc/openvpn/easyrsa
+      creates: /etc/openvpn/easyrsa/pki/issued/client.crt
+    when: client_crt_exist.stat.exists == false
+    run_once: true
+  # cp pki/dh.pem pki/ca.crt pki/issued/server.crt pki/private/server.key /etc/openvpn/
+  - name: check if ca.crt exist in openvpn folder or not
+    stat: 
+      path: /etc/openvpn/ca.crt
+    register: ca_openvpn_exist
+  - name: copy all the vpnserver required cert and keys 
+    command: cp pki/dh.pem pki/ca.crt pki/issued/server.crt pki/private/server.key /etc/openvpn/
+    args:
+      chdir: /etc/openvpn/easyrsa
+    when: ca_openvpn_exist.stat.exists == false
+    run_once: true
+  # scp pki/ca.crt 
