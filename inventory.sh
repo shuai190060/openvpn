@@ -31,3 +31,4 @@ vpn_client=$(echo "$vpn_client" | sed "s/{vpn_client_ip}/$vpn_client_ip/g")
 
 echo "[client]" >> inventory
 echo $vpn_client >> inventory
+

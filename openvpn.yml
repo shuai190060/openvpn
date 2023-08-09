@@ -1,5 +1,3 @@
-
-
 # - name: test the private instance
 #   hosts: private
 #   become: true
@@ -141,4 +139,109 @@
       chdir: /etc/openvpn/easyrsa
     when: ca_openvpn_exist.stat.exists == false
     run_once: true
-  # scp pki/ca.crt 
+  # download the files to tmp folder
+  - name: download the client files to tmp folder
+    fetch:
+      src: "{{ item.src }}"
+      dest: "./tmp/{{ item.dest }}"
+      flat: yes 
+    loop:
+    - { src: "/etc/openvpn/easyrsa/pki/dh.pem", dest: "dh.pem" }
+    - { src: "/etc/openvpn/easyrsa/pki/ca.crt", dest: "ca.crt" }
+    - { src: "/etc/openvpn/easyrsa/pki/issued/client.crt", dest: "client.crt" }
+    - { src: "/etc/openvpn/easyrsa/pki/private/client.key", dest: "client.key" }
+  - name: get IP address
+    shell: ip address show dev eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
+    register: server_ip 
+
+
+
+
+- name: configure the vpn client
+  hosts: client
+  become: true
+  tasks:
+  - name: update apt
+    apt:
+      update_cache: yes
+    run_once: true
+  - name: install openvpn 
+    apt:
+      name:
+      - openvpn
+      state: present
+  # copy the client config sample file
+  - name: check if client.config existence 
+    stat: 
+      path: /etc/openvpn/client.conf
+    register: client_config_exist
+  - name: cp /usr/share/doc/openvpn/examples/sample-config-files/client.conf /etc/openvpn/
+    command: cp /usr/share/doc/openvpn/examples/sample-config-files/client.conf /etc/openvpn/
+    when: client_config_exist.stat.exists == false
+    run_once: true
+  # check and copy the cert and keys
+  - name: check if client.crt exist or not
+    stat: 
+      path: /etc/openvpn/client.crt
+    register: client_client_exist
+  - name: upload the cert and key to client 
+    copy: 
+      src: "./tmp/{{ item }}"
+      dest: "/etc/openvpn/{{ item }}"
+    loop:
+    - client.crt
+    - client.key
+    - dh.pem
+    - ca.crt
+    when: client_client_exist.stat.exists == false
+    run_once: true
+
+  - name: Set permissions for OpenVPN client files
+    become: true
+    command: "chmod {{ item.mode }} /etc/openvpn/{{ item.file }}"
+    loop:
+      - { file: 'client.conf', mode: '644' }
+      - { file: 'client.crt', mode: '644' }
+      - { file: 'client.key', mode: '600' }
+      - { file: 'dh.pem', mode: '600' }
+      - { file: 'ca.crt', mode: '644' }
+    when: client_client_exist.stat.exists == false
+    run_once: true
+  # no need to edit the config file, because the file name are the same with the template, only to update the ip address of server
+  - name: update the server IP address
+    replace:
+      path: /etc/openvpn/client.conf  
+      regexp: 'my-server-1'
+      replace: '{{ hostvars["bastion_host"]["server_ip"]["stdout"] }}'
+    ignore_errors: yes
+  # update the ciper
+  - name: update the cipher-1
+    lineinfile:
+      path: /etc/openvpn/client.conf  
+      regexp: 'cipher AES-256-CBC'
+      line: 'cipher AES-256-GCM' 
+    ignore_errors: yes
+    tags: update_config
+  - name: update the cipher-2
+    lineinfile:
+      path: /etc/openvpn/client.conf  
+      insertafter: '^cipher AES-256-GCM'
+      line: 'data-ciphers AES-256-GCM:AES-128-GCM'
+    ignore_errors: yes
+    tags: update_config
+  - name: check ta.key existence
+    stat:
+      path: /etc/openvpn/ta.key 
+    register: ta_exists
+  - name: create ta.key
+    command: openvpn --genkey secret /etc/openvpn/ta.key
+    when: ta_exists.stat.exists == false
+    run_once: true 
+  # start openvpn service
+  - name: start the openvpn service
+    systemd:
+      name: openvpn@client 
+      enabled: yes
+      state: started
+
+   
