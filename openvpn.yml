@@ -11,7 +11,21 @@
 #     debug:
 #       var: result 
 
-
+- name: set client hostname as fact
+  hosts: localhost
+  gather_facts: false
+  tasks:
+  - name: get client instance hostname from terraform output 
+    command: terraform output -json client_hostname
+    register: hostname_client
+  - set_fact:
+      client_hostname: "{{ hostname_client.stdout | from_json | regex_replace('.ec2.internal$', '') }}"
+  - debug:
+      var: client_hostname
+  - name: save the output as json in local
+    copy:
+      content: "{{ client_hostname }}"
+      dest: "./client_hostname.json"
 
 
 - name: configure the vpn host
@@ -29,6 +43,14 @@
       - openvpn
       - easy-rsa
       state: present
+# get the hostname
+  - name: get the hostname of the server 
+    command: hostname 
+    register: hostname_server 
+  - name: print hostname
+    debug:
+      var: hostname_server
+
 # create ca folder template
   - name: check if pki folder exist or not
     stat: 
@@ -42,7 +64,7 @@
 # init pki
   - name: check if openssl-easyrsa.cnf exist or not
     stat: 
-      path: /etc/openvpn/easyrsa/openssl-easyrsa.cnf
+      path: /etc/openvpn/easyrsa/pki
     register: openssl_easyrsa_exist
   - name: easy-rsa init 
     command: ./easyrsa init-pki
@@ -82,7 +104,7 @@
       path: /etc/openvpn/easyrsa/pki/private/server.key
     register: server_key_exist
   - name: generate the server key and request
-    shell: echo -e "server" | ./easyrsa --req-cn=server gen-req server nopass
+    shell: echo -e "{{ hostname_server.stdout }}" | ./easyrsa --req-cn={{ hostname_server.stdout }} gen-req server nopass
     args:
       chdir: /etc/openvpn/easyrsa
       creates:
@@ -102,13 +124,36 @@
       creates: /etc/openvpn/easyrsa/pki/issued/server.crt
     when: server_crt_exist.stat.exists == false
     run_once: true
+  
   # create client.key and request
   - name: check if client.key exist or not
     stat: 
       path: /etc/openvpn/easyrsa/pki/private/client.key
     register: client_key_exist
+  - name: delegate to get client hostname from localhost 
+    setup:
+    delegate_to: localhost
+    register: localhost_facts
+    become: false
+  # - name: set client hostname fact fro localhost fact 
+  #   set_fact:
+  #     client_hostname: "{{ localhost_facts.ansible_facts.client_hostname }}"
+  - name: print the client hostname
+    debug:
+      var: localhost_facts.ansible_facts.client_hostname
+  - name: fetch the json file from local 
+    copy:
+      src: "./client_hostname.json"
+      dest: "/tmp/"
+  - name: read json file and extrac the value as variable 
+    shell: cat /tmp/client_hostname.json
+    register: client_hostname_raw
+  - name: set the client_hostname variable
+    set_fact:
+      client_hostname: "{{ client_hostname_raw.stdout }}"
+
   - name: create the client key
-    shell: echo  "client" | ./easyrsa --req-cn=client gen-req client nopass
+    shell: 'echo  "{{ client_hostname }}" | ./easyrsa --req-cn={{ client_hostname }} gen-req client nopass'
     args:
       chdir: /etc/openvpn/easyrsa
       creates: 
@@ -153,6 +198,11 @@
   - name: get IP address
     shell: ip address show dev eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
     register: server_ip 
+  # - name: start the openvpn service
+  #   systemd:
+  #     name: openvpn@server 
+  #     enabled: yes
+  #     state: started
 
 
 

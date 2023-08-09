@@ -15,7 +15,7 @@ resource "aws_instance" "bastion_host" {
   key_name = "ansible_ec2"
 
   tags = {
-    "Name" = "bastion"
+    Name = "server"
   }
 }
 
@@ -45,6 +45,6 @@ resource "aws_instance" "vpn_client" {
   key_name = "ansible_ec2"
 
   tags = {
-    "Name" = "vpn_client"
+    Name = "client"
   }
 }
